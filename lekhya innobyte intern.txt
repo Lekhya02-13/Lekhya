@@ -1,0 +1,223 @@
+import sqlite3
+import bcrypt
+from datetime import datetime
+from tabulate import tabulate
+
+# Database Initialization
+def init_db():
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+
+    # Users Table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        username TEXT UNIQUE,
+        password TEXT
+    )
+    ''')
+
+    # Transactions Table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        amount REAL,
+        category TEXT,
+        type TEXT,
+        date TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    ''')
+
+    # Budgets Table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS budgets (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        category TEXT,
+        amount REAL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+# User Registration
+def register_user():
+    username = input("Enter a username: ")
+    password = input("Enter a password: ")
+    hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
+        conn.commit()
+        print("Registration successful!")
+    except sqlite3.IntegrityError:
+        print("Username already exists.")
+    finally:
+        conn.close()
+
+# User Login
+def login_user():
+    username = input("Enter your username: ")
+    password = input("Enter your password: ")
+
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, password FROM users WHERE username = ?", (username,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if user and bcrypt.checkpw(password.encode(), user[1]):
+        print("Login successful!")
+        return user[0]
+    else:
+        print("Invalid username or password.")
+        return None
+
+# Add Transaction
+def add_transaction(user_id):
+    amount = float(input("Enter amount: "))
+    category = input("Enter category (e.g., Food, Rent): ")
+    trans_type = input("Type (income/expense): ").lower()
+    date = input("Enter date (YYYY-MM-DD) or leave blank for today: ") or datetime.today().strftime('%Y-%m-%d')
+
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO transactions (user_id, amount, category, type, date)
+    VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, amount, category, trans_type, date))
+    conn.commit()
+    conn.close()
+    print("Transaction added successfully!")
+
+# Update/Delete Transaction
+def manage_transactions(user_id):
+    print("Feature to update/delete transactions coming soon.")
+
+# Generate Financial Report
+def generate_report(user_id):
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+
+    # Fetch total income and expense
+    cursor.execute('''
+    SELECT type, SUM(amount) FROM transactions
+    WHERE user_id = ? GROUP BY type
+    ''', (user_id,))
+    data = cursor.fetchall()
+
+    # Monthly Transactions
+    cursor.execute('''
+    SELECT category, SUM(amount), type FROM transactions
+    WHERE user_id = ? AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now')
+    GROUP BY category, type
+    ''', (user_id,))
+    monthly_data = cursor.fetchall()
+    conn.close()
+
+    total_income = sum(amount for trans_type, amount in data if trans_type == 'income')
+    total_expense = sum(amount for trans_type, amount in data if trans_type == 'expense')
+
+    print("\n--- Financial Report ---")
+    print(f"Total Income: {total_income}")
+    print(f"Total Expense: {total_expense}")
+    print(f"Savings: {total_income - total_expense}")
+    print("\n--- Monthly Breakdown ---")
+    print(tabulate(monthly_data, headers=["Category", "Amount", "Type"]))
+
+# Set Budget
+def set_budget(user_id):
+    category = input("Enter category: ")
+    amount = float(input("Enter budget amount: "))
+
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO budgets (user_id, category, amount)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, category) DO UPDATE SET amount = excluded.amount
+    ''', (user_id, category, amount))
+    conn.commit()
+    conn.close()
+    print("Budget set successfully!")
+
+# Notify Budget Exceeded
+def check_budget(user_id):
+    conn = sqlite3.connect("finance_manager.db")
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    SELECT b.category, b.amount, IFNULL(SUM(t.amount), 0) as spent
+    FROM budgets b
+    LEFT JOIN transactions t ON b.user_id = t.user_id AND b.category = t.category
+    WHERE b.user_id = ? AND t.type = 'expense'
+    GROUP BY b.category
+    HAVING spent > b.amount
+    ''', (user_id,))
+    exceeded = cursor.fetchall()
+    conn.close()
+
+    if exceeded:
+        print("\n--- Budget Exceeded ---")
+        for category, limit, spent in exceeded:
+            print(f"Category: {category}, Limit: {limit}, Spent: {spent}")
+
+# Main Menu
+def main_menu():
+    print("\n--- Personal Finance Manager ---")
+    print("1. Register")
+    print("2. Login")
+    print("3. Exit")
+    return input("Choose an option: ")
+
+# User Menu
+def user_menu():
+    print("\n--- User Dashboard ---")
+    print("1. Add Income/Expense")
+    print("2. Update/Delete Transaction")
+    print("3. Generate Financial Report")
+    print("4. Set Budget")
+    print("5. Logout")
+    return input("Choose an option: ")
+
+# Main Function
+def main():
+    init_db()
+    user_id = None
+    while True:
+        choice = main_menu()
+        if choice == "1":
+            register_user()
+        elif choice == "2":
+            user_id = login_user()
+            if user_id:
+                while True:
+                    check_budget(user_id)
+                    user_choice = user_menu()
+                    if user_choice == "1":
+                        add_transaction(user_id)
+                    elif user_choice == "2":
+                        manage_transactions(user_id)
+                    elif user_choice == "3":
+                        generate_report(user_id)
+                    elif user_choice == "4":
+                        set_budget(user_id)
+                    elif user_choice == "5":
+                        print("Logged out.")
+                        break
+                    else:
+                        print("Invalid choice. Try again.")
+        elif choice == "3":
+            print("Exiting the application. Goodbye!")
+            break
+        else:
+            print("Invalid choice. Try again.")
+
+if __name__ == "__main__":
+    main()
